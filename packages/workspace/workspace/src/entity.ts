@@ -43,9 +43,27 @@ export interface WorkspaceEntityHost {
    * qualified cwd cannot resolve because a path component is missing.
    * @param id - Session already present in this workspace's candidate account.
    * @param path - Workspace's stored canonical directory.
+   * @param workspaceId - The workspace asking, so an explicit move claim held
+   * by another workspace answers `false` here.
    * @returns whether the candidate remains a member.
    */
-  candidateMatches(id: SessionId, path: string): boolean
+  candidateMatches(id: SessionId, path: string, workspaceId: WorkspaceId): boolean
+
+  /**
+   * Publish an explicit move claim: `id` belongs to this workspace even though
+   * the canonical cwd its header records names another one.
+   * @param id - The session the user moved here.
+   * @param workspaceId - The claiming workspace.
+   */
+  claimMovedSession(id: SessionId, workspaceId: WorkspaceId): void
+
+  /**
+   * Retract this workspace's explicit move claim for `id`, restoring the
+   * canonical-cwd answer for every other workspace.
+   * @param id - The session whose claim is dropped.
+   * @param workspaceId - The workspace retracting the claim.
+   */
+  releaseMovedSession(id: SessionId, workspaceId: WorkspaceId): void
 
   /**
    * Read one stored session header for attach validation.
@@ -100,7 +118,10 @@ export class WorkspaceEntity implements Workspace {
   }
 
   get sessionIds(): readonly SessionId[] {
-    return this.record.sessionIds.filter(id => this.host.candidateMatches(id, this.record.path))
+    const moved = new Set<SessionId>(this.record.movedSessionIds)
+    return this.record.sessionIds.filter(
+      id => moved.has(id) || this.host.candidateMatches(id, this.record.path, this.id),
+    )
   }
 
   async setTitle(title: string): Promise<void> {
@@ -173,9 +194,39 @@ export class WorkspaceEntity implements Workspace {
   }
 
   async detachSession(sessionId: SessionId): Promise<void> {
-    await this.mutate(record => record.sessionIds.includes(sessionId)
-      ? { ...record, sessionIds: record.sessionIds.filter(id => id !== sessionId) }
-      : record)
+    await this.mutate((record) => {
+      if (!record.sessionIds.includes(sessionId)) return record
+      return {
+        ...record,
+        sessionIds: record.sessionIds.filter(id => id !== sessionId),
+        movedSessionIds: record.movedSessionIds.filter(id => id !== sessionId),
+      }
+    })
+    this.host.releaseMovedSession(sessionId, this.id)
+  }
+
+  /**
+   * Take an explicit move claim on a session: record it at the head of the
+   * account and mark it as moved here, so the canonical-cwd check stops
+   * deciding its membership. The idempotence and single-owner checks belong to
+   * the registry, which serializes the cross-workspace write; this method only
+   * writes what the claim needs.
+   * @param sessionId - The session the user is moving into this workspace.
+   * @returns resolution after durability.
+   */
+  async claimSession(sessionId: SessionId): Promise<void> {
+    await this.mutate((record) => {
+      const sessionIds = record.sessionIds.includes(sessionId)
+        ? record.sessionIds
+        : [sessionId, ...record.sessionIds]
+      const movedSessionIds = record.movedSessionIds.includes(sessionId)
+        ? record.movedSessionIds
+        : [sessionId, ...record.movedSessionIds]
+      return sessionIds === record.sessionIds && movedSessionIds === record.movedSessionIds
+        ? record
+        : { ...record, sessionIds, movedSessionIds }
+    })
+    this.host.claimMovedSession(sessionId, this.id)
   }
 
   async status(): Promise<'ok' | 'missing-dir'> {
@@ -205,13 +256,18 @@ export class WorkspaceEntity implements Workspace {
     try {
       next = await this.host.table().update(this.id, (current) => {
         const changed = fn(current)
+        const moved = new Set<SessionId>(changed.movedSessionIds)
         const sessionIds = changed.sessionIds.filter(
-          id => this.host.candidateMatches(id, changed.path),
+          id => moved.has(id) || this.host.candidateMatches(id, changed.path, this.id),
         )
-        if (changed === current && sessionIds.length === current.sessionIds.length) {
+        const kept = new Set<SessionId>(sessionIds)
+        const movedSessionIds = changed.movedSessionIds.filter(id => kept.has(id))
+        const pruned = sessionIds.length !== current.sessionIds.length
+          || movedSessionIds.length !== current.movedSessionIds.length
+        if (changed === current && !pruned) {
           throw unchangedSentinel
         }
-        return { ...changed, sessionIds, updatedAt: new Date().toISOString() }
+        return { ...changed, sessionIds, movedSessionIds, updatedAt: new Date().toISOString() }
       })
     } catch (error) {
       if (error === unchangedSentinel) return

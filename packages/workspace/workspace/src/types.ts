@@ -63,8 +63,9 @@ export interface SessionActivity {
  * One workspace: a stable id over an existing directory, a display title, and
  * an ordered candidate account of sessions. Membership validates header cwd
  * against the workspace path, but preserves an existing account when its
- * fully qualified cwd is missing. Consumers only see this interface; the
- * implementation stays private.
+ * fully qualified cwd is missing, and a session the user moved here
+ * explicitly keeps its slot whatever its header cwd says. Consumers only see
+ * this interface; the implementation stays private.
  */
 export interface Workspace {
   /** Stable record id (generated uuid). */
@@ -94,8 +95,10 @@ export interface Workspace {
    * and canonical cwd mismatches are never returned. A fully qualified cwd
    * whose realpath or directory stat fails with ENOENT preserves an existing
    * candidate, including a dangling symlink; other filesystem failures do not.
-   * A subsequent mutation prunes filtered candidates, not missing-directory
-   * candidates. This does not admit new sessions or recreate directories.
+   * A session moved here by `workspaceRegistry.moveSession` stays a member
+   * without passing that check. A subsequent mutation prunes filtered
+   * candidates, not missing-directory or explicitly moved candidates. This
+   * does not admit new sessions or recreate directories.
    */
   readonly sessionIds: readonly SessionId[]
 

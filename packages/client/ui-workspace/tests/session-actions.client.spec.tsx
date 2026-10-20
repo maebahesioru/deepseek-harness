@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { WorkspaceId, WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type { WorkspaceId, WorkspaceSnapshot, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -24,6 +24,7 @@ import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type {
   MenuOpenState, RowToast, RowToastState, SessionArchiveConfirmInjected, SessionArchiveConfirmRequest,
+  SessionMoveDialogInjected, SessionMoveTarget,
   SessionRenameDialogInjected, SessionRenameTarget,
 } from '../src/client/contract/slots.ts'
 import {
@@ -32,6 +33,7 @@ import {
 import { ForkSessionMenuItem } from '../src/client/session-actions/ForkSession.tsx'
 import { PinSessionMenuItem, PinSessionRowButton } from '../src/client/session-actions/PinSession.tsx'
 import { RenameSessionMenuItem, SessionRenameDialog } from '../src/client/session-actions/RenameSession.tsx'
+import { MoveSessionMenuItem, SessionMoveDialog } from '../src/client/session-actions/MoveSession.tsx'
 import { RowActionToast } from '../src/client/session-actions/RowActionToast.tsx'
 import { SessionIdMenuItem } from '../src/client/session-actions/SessionId.tsx'
 import { createWorkspaceViewStore } from '../src/client/stores.ts'
@@ -821,4 +823,73 @@ it('shows effective Session shortcuts while menu clicks keep the row target', ()
   expect(requestSessionRename).toHaveBeenCalledWith(ROW.sessionId, ROW.displayTitle)
   expect(forkSession).toHaveBeenCalledWith(ROW.sessionId)
   expect(archiveSession).toHaveBeenCalledWith(ROW.sessionId)
+})
+
+describe('session move action', () => {
+  const beta = {
+    workspaceId: 'beta' as WorkspaceId, path: '/projects/beta', title: 'beta', sessionIds: [] as SessionId[],
+    createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+  }
+  /** The dialog over a test-owned request source; settling clears it the way apply does. */
+  function moveDialog(
+    moveSession: SessionMoveDialogInjected['moveSession'],
+    items: readonly WorkspaceView[] = [beta],
+  ) {
+    const request = createSnapshotStore<SessionMoveTarget | null>(null)
+    const settleSessionMove = vi.fn(() => { request.set(null) })
+    render(
+      <SessionMoveDialog
+        {...overlay}
+        useMoveRequest={bindSnapshotSelector(request)}
+        useWorkspaceRows={hook(items)}
+        settleSessionMove={settleSessionMove}
+        moveSession={moveSession}
+      />,
+    )
+    const ask = (): void => {
+      act(() => { request.set({ sessionId: ROW.sessionId, displayTitle: ROW.displayTitle }) })
+    }
+    return { settleSessionMove, ask }
+  }
+
+  it('menu row closes the menu, then raises the move request for the row', () => {
+    const { state, setMenuOpen } = openMenu()
+    const requestSessionMove = vi.fn()
+    render(<MoveSessionMenuItem {...menuRow(state)} requestSessionMove={requestSessionMove} />)
+    fireEvent.click(screen.getByRole('menuitem', { name: t('move.menu') }))
+    expect(setMenuOpen).toHaveBeenCalledWith(false)
+    expect(requestSessionMove).toHaveBeenCalledExactlyOnceWith(ROW.sessionId, ROW.displayTitle)
+    expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(requestSessionMove))
+  })
+
+  it('renders nothing until a move is requested', () => {
+    moveDialog(vi.fn(async () => {}))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('offers the Workspaces that do not already own the row, and settles after the move', async () => {
+    const moveSession = vi.fn(async () => {})
+    const { settleSessionMove, ask } = moveDialog(moveSession, [workspaces.items[0]!, beta])
+    ask()
+    expect(screen.queryByRole('button', { name: /alpha/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /beta/ }))
+    await waitFor(() => { expect(settleSessionMove).toHaveBeenCalled() })
+    expect(moveSession).toHaveBeenCalledExactlyOnceWith(ROW.sessionId, 'beta')
+  })
+
+  it('keeps the dialog open with the Host message when the move is refused', async () => {
+    const moveSession = vi.fn(async () => { throw new Error('workspace/not-found: unknown workspace') })
+    const { ask, settleSessionMove } = moveDialog(moveSession)
+    ask()
+    fireEvent.click(screen.getByRole('button', { name: /beta/ }))
+    expect((await screen.findByRole('alert')).textContent).toBe('workspace/not-found: unknown workspace')
+    expect(screen.queryByRole('dialog')).not.toBeNull()
+    expect(settleSessionMove).not.toHaveBeenCalled()
+  })
+
+  it('says so when the row has no other Workspace to move into', () => {
+    const { ask } = moveDialog(vi.fn(async () => {}), [workspaces.items[0]!])
+    ask()
+    expect(screen.getByText(t('move.dialog.empty'))).not.toBeNull()
+  })
 })

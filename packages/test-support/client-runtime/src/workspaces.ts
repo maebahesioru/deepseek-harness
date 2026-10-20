@@ -105,6 +105,31 @@ export class TestWorkspaces implements IWorkspaces {
   }
 
   /**
+   * Move a session into another Workspace (recorded). The default mirrors the
+   * production face's observable effect: the id leaves every other account and
+   * leads the target's, and the target row comes back.
+   * @param sessionId - session to move.
+   * @param workspaceId - Workspace that owns it from then on.
+   * @returns the target Workspace row.
+   */
+  async moveSession(sessionId: SessionId, workspaceId: WorkspaceId): Promise<WorkspaceView> {
+    this.calls.push({ method: 'moveSession', args: [sessionId, workspaceId] })
+    const stub = this.stubs.get('moveSession')
+    if (stub !== undefined) return await (stub(sessionId, workspaceId) as Promise<WorkspaceView>)
+    await this.update((draft) => {
+      draft.items = draft.items.map(item => ({
+        ...item,
+        sessionIds: item.workspaceId === workspaceId
+          ? [sessionId, ...item.sessionIds.filter(id => id !== sessionId)]
+          : item.sessionIds.filter(id => id !== sessionId),
+      }))
+    })
+    const target = this.list.getSnapshot().items.find(item => item.workspaceId === workspaceId)
+    if (target === undefined) throw new Error(`unknown workspace '${workspaceId}'`)
+    return target
+  }
+
+  /**
    * Delete a Workspace (recorded; default no-op).
    * @param workspaceId - target workspace.
    */

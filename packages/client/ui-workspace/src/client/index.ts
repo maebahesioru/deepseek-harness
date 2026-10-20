@@ -41,6 +41,7 @@ import {
   type ArchiveSessionInjected, type ForkSessionInjected, menuOpenStateFactory, type PinSessionInjected,
   type SessionArchiveConfirmInjected, type SessionArchiveConfirmRequest,
   type RenameSessionInjected, type RowToast, type RowToastInjected, type RowToastState, type SessionRenameDialogInjected,
+  type SessionMoveDialogInjected, type SessionMoveTarget, type MoveSessionInjected,
   type SessionIdInjected, type WorkspaceBrowserInjected, type WorkspacePickerInjected,
 } from './contract/slots.ts'
 import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from './shortcuts.ts'
@@ -52,6 +53,7 @@ import { derive } from './session-actions/derived.ts'
 import { ForkSessionMenuItem } from './session-actions/ForkSession.tsx'
 import { PinSessionMenuItem, PinSessionRowButton } from './session-actions/PinSession.tsx'
 import { RenameSessionMenuItem, SessionRenameDialog } from './session-actions/RenameSession.tsx'
+import { MoveSessionMenuItem, SessionMoveDialog } from './session-actions/MoveSession.tsx'
 import { RowActionToast } from './session-actions/RowActionToast.tsx'
 import { registerToasts } from './toast/register.ts'
 import { SessionIdMenuItem } from './session-actions/SessionId.tsx'
@@ -165,6 +167,10 @@ export function apply(ctx: Context): void {
   // its bound hook.
   const renameRequest = derive(shortcutControls.state, state => state.renameTarget)
   const archiveRequest = createSnapshotStore<SessionArchiveConfirmRequest | null>(null)
+  const moveRequest = createSnapshotStore<SessionMoveTarget | null>(null)
+  // The move dialog chooses between Workspace rows, so it reads the list as an
+  // array rather than the whole snapshot.
+  const workspaceItems = derive(workspaces.list, snapshot => snapshot.items)
   const requestSessionRename = shortcutControls.rename
   const unarchiveSession = (sessionId: SessionId): void => {
     uiWorkspace.unarchiveSession(sessionId).catch((reason: unknown) => {
@@ -245,6 +251,17 @@ export function apply(ctx: Context): void {
     settleSessionRename: shortcutControls.closeRename,
     renameSession,
   })
+  const moveInjected = (): MoveSessionInjected => ({
+    requestSessionMove: (sessionId, displayTitle) => { moveRequest.set({ sessionId, displayTitle }) },
+  })
+  const moveDialogInjected = (): SessionMoveDialogInjected => ({
+    hooks: { moveRequest, workspaceRows: workspaceItems },
+    settleSessionMove: () => { moveRequest.set(null) },
+    // The Host call is the whole behavior: the pushed frame re-accounts the
+    // row, and a refusal (unknown Session or Workspace) keeps the dialog open
+    // with the Host's message.
+    moveSession: (sessionId, workspaceId) => uiWorkspace.moveSession(sessionId, workspaceId),
+  })
   const toastActions = {
     undoArchive: unarchiveSession,
     showArchived: () => { viewInstance.actions.setArchivedFilter('show') },
@@ -317,6 +334,7 @@ export function apply(ctx: Context): void {
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'pin', order: 100, locale: NS, inject: pinInjected }, PinSessionMenuItem)
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'rename', order: 200, locale: NS, inject: renameInjected }, RenameSessionMenuItem)
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'fork', order: 300, locale: NS, inject: forkInjected }, ForkSessionMenuItem)
+    yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'move', order: 350, locale: NS, inject: moveInjected }, MoveSessionMenuItem)
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'archive', order: 400, locale: NS, inject: archiveInjected }, ArchiveSessionMenuItem)
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'session-id', order: 450, locale: NS, inject: sessionIdInjected }, SessionIdMenuItem)
   })
@@ -330,6 +348,9 @@ export function apply(ctx: Context): void {
     yield ctx.slots.register({
       name: 'shell.overlay', id: 'workspace.session-rename', locale: NS, inject: renameDialogInjected,
     }, SessionRenameDialog)
+    yield ctx.slots.register({
+      name: 'shell.overlay', id: 'workspace.session-move', locale: NS, inject: moveDialogInjected,
+    }, SessionMoveDialog)
     yield ctx.slots.register({
       name: 'shell.overlay', id: 'workspace.session-archive', locale: NS, inject: archiveConfirmInjected,
     }, SessionArchiveConfirmDialog)

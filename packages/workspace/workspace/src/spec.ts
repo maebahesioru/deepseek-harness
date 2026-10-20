@@ -20,11 +20,17 @@ const sessionId = z.string().transform(value => brandString<SessionId>(value))
  * Durable shape of one workspace record. `path` is the `fs.realpath` canon
  * stamped at create; `sessionIds` is the ordered ownership account (array
  * order is display order); timestamps are ISO-8601 strings.
+ * `movedSessionIds` names the members a user moved here explicitly. Such a
+ * member keeps its account slot even though the canonical cwd it was created
+ * in names a different workspace, and the registry excludes the id from every
+ * other workspace, so a claim stays single-owner. The field is defaulted so
+ * records written before it parse unchanged.
  */
 export const workspaceRecord = z.object({
   path: z.string(),
   title: z.string(),
   sessionIds: z.array(sessionId),
+  movedSessionIds: z.array(sessionId).default([]),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -35,11 +41,14 @@ export type WorkspaceRecord = z.infer<typeof workspaceRecord>
 /**
  * Recoverable two-write mutation marker. The marker is persisted before the
  * record/order pair can diverge, so startup can distinguish an interrupted
- * registry operation from unexplained medium corruption.
+ * registry operation from unexplained medium corruption. A `move` marker
+ * covers the three writes a cross-workspace session move needs: the target
+ * account gains the id, every other account drops it, and the marker clears.
  */
 const workspacePendingMutation = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('create'), workspaceId }),
   z.object({ operation: z.literal('delete'), workspaceId }),
+  z.object({ operation: z.literal('move'), workspaceId, sessionId }),
 ])
 
 /**

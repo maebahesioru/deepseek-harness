@@ -21,6 +21,7 @@ import type {
   WorkspaceId,
   WorkspaceInsertBeforeRequest,
   WorkspaceInsertSessionBeforeRequest,
+  WorkspaceMoveSessionRequest,
   WorkspaceOrderValue,
   WorkspacePinSessionRequest,
   WorkspacePinValue,
@@ -149,6 +150,18 @@ export class WorkspaceController extends TypertRemoteService {
   @Remote('insertSessionBefore')
   insertSessionBefore(request: WorkspaceInsertSessionBeforeRequest): Promise<WorkspaceValue> {
     return this.commands.insertSessionBefore(request)
+  }
+
+  /**
+   * Move one known Session into another Workspace by explicit user claim. The
+   * Session's stored header cwd and its log stay put; the target account owns
+   * it from then on and every other account drops it.
+   * @param request - Target Workspace and the Session to move.
+   * @returns the target Workspace projection after the move.
+   */
+  @Remote('moveSession')
+  moveSession(request: WorkspaceMoveSessionRequest): Promise<WorkspaceValue> {
+    return this.commands.moveSession(request)
   }
 
   /**

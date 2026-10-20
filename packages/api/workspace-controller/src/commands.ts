@@ -7,6 +7,7 @@ import {
   WorkspaceArchivedSessionPinError,
   WorkspaceId,
   WorkspaceMoveInvalidError,
+  WorkspaceMoveTargetUnknownError,
   WorkspaceOrderInvalidError,
   WorkspaceUnknownSessionError,
 } from '@deepseek-ai/dsh-workspace'
@@ -21,6 +22,7 @@ import type {
   WorkspaceDeleteValue,
   WorkspaceInsertBeforeRequest,
   WorkspaceInsertSessionBeforeRequest,
+  WorkspaceMoveSessionRequest,
   WorkspaceOrderValue,
   WorkspacePinSessionRequest,
   WorkspacePinValue,
@@ -149,6 +151,29 @@ export class WorkspaceCommands {
       )
     }
     return { workspace: workspaceView(workspace) }
+  }
+
+  /**
+   * Move one known Session into another Workspace by explicit user claim. The
+   * Session's stored header cwd and its log are untouched; only the registry
+   * account changes, so the target owns it from this write on.
+   * @param request - Target Workspace and the Session to move.
+   * @returns the target Workspace projection after the move.
+   */
+  async moveSession(request: WorkspaceMoveSessionRequest): Promise<WorkspaceValue> {
+    this.requireWorkspace(request.workspaceId)
+    try {
+      await this.ctx.workspaceRegistry.moveSession(request.sessionId, request.workspaceId)
+    } catch (error) {
+      if (error instanceof WorkspaceUnknownSessionError) {
+        throw new RemoteError(
+          'session/not-found', error.message, { sessionId: request.sessionId }, { cause: error },
+        )
+      }
+      if (error instanceof WorkspaceMoveTargetUnknownError) throw workspaceNotFound(request.workspaceId)
+      throw error
+    }
+    return { workspace: workspaceView(this.requireWorkspace(request.workspaceId)) }
   }
 
   /**

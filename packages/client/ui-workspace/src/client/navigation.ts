@@ -111,6 +111,13 @@ export interface UiWorkspace {
    */
   unpinSession(sessionId: SessionId): Promise<void>
   /**
+   * Move a Session into another Workspace by explicit user claim; the log and
+   * the Session's own working directory stay where they are.
+   * @param sessionId - Session to move.
+   * @param workspaceId - Workspace that owns it from then on.
+   */
+  moveSession(sessionId: SessionId, workspaceId: WorkspaceId): Promise<void>
+  /**
    * Open the Host-native directory picker.
    * @returns the selected directory, or null when cancelled.
    */
@@ -385,6 +392,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   async unpinSession(sessionId: SessionId): Promise<void> {
     await this.workspaces.unpinSession(sessionId)
+  }
+
+  async moveSession(sessionId: SessionId, workspaceId: WorkspaceId): Promise<void> {
+    await this.workspaces.moveSession(sessionId, workspaceId)
   }
 
   async pickDirectory(): Promise<string | null> {

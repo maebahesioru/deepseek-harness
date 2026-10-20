@@ -27,8 +27,9 @@ type WorkspaceId = Branded<'WorkspaceId'>
  * One workspace: a stable id over an existing directory, a display title, and
  * an ordered candidate account of sessions. Membership validates header cwd
  * against the workspace path, but preserves an existing account when its
- * fully qualified cwd is missing. Consumers only see this interface; the
- * implementation stays private.
+ * fully qualified cwd is missing, and a session the user moved here
+ * explicitly keeps its slot whatever its header cwd says. Consumers only see
+ * this interface; the implementation stays private.
  */
 interface Workspace {
   /** Stable record id (generated uuid). */
@@ -58,8 +59,10 @@ interface Workspace {
    * and canonical cwd mismatches are never returned. A fully qualified cwd
    * whose realpath or directory stat fails with ENOENT preserves an existing
    * candidate, including a dangling symlink; other filesystem failures do not.
-   * A subsequent mutation prunes filtered candidates, not missing-directory
-   * candidates. This does not admit new sessions or recreate directories.
+   * A session moved here by `workspaceRegistry.moveSession` stays a member
+   * without passing that check. A subsequent mutation prunes filtered
+   * candidates, not missing-directory or explicitly moved candidates. This
+   * does not admit new sessions or recreate directories.
    */
   readonly sessionIds: readonly SessionId[]
 
@@ -117,13 +120,21 @@ interface Workspace {
 }
 ```
 
-所有权的真源是记录中有序的 `sessionIds`，绝不从会话 cwd 派生。成员资格将记录的 header cwd 与工作区路径校验；已有候选的完全限定 cwd 在路径解析或目录 stat 时返回 `ENOENT`，仍保留其归属。这会保留目录缺失或符号链接失效时的记账关系，但不会接纳新会话。失败的写入会拒绝（`insertSessionBefore` 的账本错误以 `WorkspaceMoveInvalidError` 拒绝，存储失败以普通错误拒绝）；每次被接受的变更都盖上 `updatedAt` 时间戳，并持久修剪不再通过成员资格检查的候选项。
+所有权的真源是记录中有序的 `sessionIds`，绝不从会话 cwd 派生。成员资格将记录的 header cwd 与工作区路径校验；已有候选的完全限定 cwd 在路径解析或目录 stat 时返回 `ENOENT`，仍保留其归属。这会保留目录缺失或符号链接失效时的记账关系，但不会接纳新会话。失败的写入会拒绝（`insertSessionBefore` 的账本错误以 `WorkspaceMoveInvalidError` 拒绝，存储失败以普通错误拒绝）；每次被接受的变更都盖上 `updatedAt` 时间戳，并持久修剪不再通过成员资格检查的候选项，被显式移动认领的候选项除外（见[跨工作区移动会话](#session-moves-between-workspaces)）。
 
 ## 注册表：`ctx.workspaceRegistry`
 
-`WorkspaceRegistry`（[签名](#ctxworkspaceregistry--workspaceregistry)）拥有注册与解析。`create(path, title?)` 要求完全限定路径并将其规范化，拒绝不存在的路径（原样传出原始 `ENOENT`）或非目录；当规范路径已被拥有时原样返回既有实体；否则创建一条标题为 `title ?? defaultWorkspaceTitle(path)` 的记录并前插到持久的注册表顺序中（不同规范路径可以共享同一显示标题，没有最终路径段时使用根路径拼写）。`get(id)` 与有序的 `list()` 是同步缓存读取；`resolveByPath(path)` 应用同一套完全限定 realpath 规范但不创建。`delete(id)` 只移除注册记录、顺序条目和会话账本——目录、用户文件、实时会话和已持久化日志一概不动，因此这些会话变为 Ungrouped（[参考](../../packages/workspace/workspace/README.zh.md)）；未知 id 返回 `false`。create 与 delete 会在其两次写入（记录 + 顺序）可能分叉之前先持久写入一个待定变更标记；启动时恰好解决被标记的那次变更——通过删除被标记的表行：这会补完被中断的 delete，并回滚被中断的 create（注册可以重建，因此回滚是安全方向）——而没有标记的顺序/表不一致则作为损坏大声失败。
+`WorkspaceRegistry`（[签名](#ctxworkspaceregistry--workspaceregistry)）拥有注册与解析。`create(path, title?)` 要求完全限定路径并将其规范化，拒绝不存在的路径（原样传出原始 `ENOENT`）或非目录；当规范路径已被拥有时原样返回既有实体；否则创建一条标题为 `title ?? defaultWorkspaceTitle(path)` 的记录并前插到持久的注册表顺序中（不同规范路径可以共享同一显示标题，没有最终路径段时使用根路径拼写）。`get(id)` 与有序的 `list()` 是同步缓存读取；`resolveByPath(path)` 应用同一套完全限定 realpath 规范但不创建。`delete(id)` 只移除注册记录、顺序条目和会话账本——目录、用户文件、实时会话和已持久化日志一概不动，因此这些会话变为 Ungrouped（[参考](../../packages/workspace/workspace/README.zh.md)）；未知 id 返回 `false`。create、delete 与跨工作区移动会在其写入可能分叉之前先持久写入一个待定变更标记；启动时恰好解决被标记的那次变更——通过删除被标记的表行：这会补完被中断的 delete，并回滚被中断的 create（注册可以重建，因此回滚是安全方向），或补完被标记的会话移动（见[跨工作区移动会话](#session-moves-between-workspaces)）——而没有标记的顺序/表不一致则作为损坏大声失败。
 
 会话的 cwd 在创建时由创建者赋予，而不是由本注册表赋予——API 网关从所选工作区的 `path` 解析新会话的 cwd（回退到显式或默认 cwd），先创建会话使 cwd 落入其不可变的 [`SessionHeader`](persistence.zh.md#sessionheader--metadata-beside-the-log)，再调用 `attachSession`，后者会把已存储的 header cwd 与工作区路径重新校验一遍。首次成功启动时，注册表仅凭已持久化的 header（`id`、`cwd`、`createdAt`——绝不读事件正文）引导历史：把规范 cwd 有效的会话按目录分组为工作区，最新的排在最前；「已初始化」标记最后写入，因此被中断的引导可以安全续跑。引导只发生这一次：没有 cwd 的历史遗留会话保持 Ungrouped，此后创建的会话只能通过 `attachSession` 加入工作区。
+
+## 跨工作区移动会话
+
+<a id="session-moves-between-workspaces"></a>
+
+会话的归属是注册表里的账目，而不是会话自身的属性。`moveSession(sessionId, workspaceId)` 按用户的显式指定把一个已知会话改派到另一个工作区：目标工作区把该 id 放到账目首位，其他账目一并丢弃它，而会话头部保存的 cwd 与日志原地不动。日志在物理上属于创建它的目录——挪动它会改变此后每一次追加的落点——而分组界面读的是账目，因此显式认领正是让目标工作区在规范化 cwd 仍指向旧工作区时继续拥有该会话的依据。
+
+认领与账目一起持久化：`movedSessionIds` 保存用户移入本工作区的 id，因此即使某个候选不再通过头部校验，它仍在本工作区渲染；`detachSession` 会连同账目一起丢掉认领，把会话交还给其 cwd 指向的工作区。移动在第一次写入前打下 `pendingMutation` 标记、在最后一次写入后清除，因此一次中断的运行绝不会让该 id 同时留在两本账里或两本账都没有：启动时会在 `validateStoredState` 读取账目之前补完带标记的移动。目标工作区已拥有该会话时，移动不写盘直接返回；未知工作区或未知会话在任何写入前拒绝；除此之外不设拒绝条件，也不重新指向会话运行所用的 cwd，因此被移动的会话仍按原目录解析相对路径。
 
 ## 默认工作区初始化
 
@@ -168,7 +179,7 @@ interface SessionActivity {
 
 ## 消费方
 
-[`dsh-workspace-controller`](../../packages/api/workspace-controller) 经 `ctx.workspaceRegistry` 向 GUI 客户端提供工作区 CRUD，[`dsh-session-controller`](../../packages/api/session-controller) 执行上文「先建会话再 attach」的流程。[dsh-agent-instructions](../../packages/context/agent-instructions) 尽管名字如此，却**不是**消费方：它在 agent 自己的 cwd 下发现 AGENTS.md 风格的指令文件，从不触碰 `ctx.workspaceRegistry`——两者共用的这个词指的是用户的工作目录，而非本注册表的实体。
+[`dsh-workspace-controller`](../../packages/api/workspace-controller) 经 `ctx.workspaceRegistry` 向 GUI 客户端提供工作区 CRUD，[`dsh-session-controller`](../../packages/api/session-controller) 执行上文「先建会话再 attach」的流程。侧栏的 Session 行菜单提供**移动到工作区…**，经由该控制器调用 `moveSession`；对话框只列出尚未把该行计入账目的工作区，因为它当前所在的那个不是目的地。[dsh-agent-instructions](../../packages/context/agent-instructions) 尽管名字如此，却**不是**消费方：它在 agent 自己的 cwd 下发现 AGENTS.md 风格的指令文件，从不触碰 `ctx.workspaceRegistry`——两者共用的这个词指的是用户的工作目录，而非本注册表的实体。
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -357,6 +368,15 @@ Host service backing the generated `ctx.remote.workspace` namespace.
  * @returns the updated Workspace projection.
  */
 @Remote('insertSessionBefore') insertSessionBefore(request: WorkspaceInsertSessionBeforeRequest): Promise<WorkspaceValue>
+
+/**
+ * Move one known Session into another Workspace by explicit user claim. The
+ * Session's stored header cwd and its log stay put; the target account owns
+ * it from then on and every other account drops it.
+ * @param request - Target Workspace and the Session to move.
+ * @returns the target Workspace projection after the move.
+ */
+@Remote('moveSession') moveSession(request: WorkspaceMoveSessionRequest): Promise<WorkspaceValue>
 
 /**
  * Hide one known Session from Workspace grouping surfaces.
@@ -578,6 +598,23 @@ pinSession(sessionId: SessionId): Promise<void>
  * @returns resolution after durability.
  */
 unpinSession(sessionId: SessionId): Promise<void>
+
+/**
+ * Move one known session into another workspace by explicit user claim.
+ * The session's stored header keeps its cwd and its log stays where it is:
+ * membership is a registry account, so the target gains the id at the head
+ * of its account, every other account drops it, and the claim keeps the
+ * target owning it even though the canonical cwd names the old workspace.
+ * The move is marked before the first account write and the marker is
+ * cleared after the last one, so an interrupted run is completed at the next
+ * startup instead of leaving the id in two accounts or in none.
+ * A session already owned by the target resolves without writing; an
+ * unknown workspace or unknown session rejects before any write.
+ * @param sessionId - The session to move.
+ * @param workspaceId - The workspace that now owns it.
+ * @returns resolution after durability.
+ */
+moveSession(sessionId: SessionId, workspaceId: WorkspaceId): Promise<void>
 
 /**
  * Resolve by canonical directory path without creating or mutating a

@@ -808,6 +808,7 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   WorkspaceId: 'workspace.md',
   WorkspaceInsertBeforeRequest: 'workspace.md',
   WorkspaceInsertSessionBeforeRequest: 'workspace.md',
+  WorkspaceMoveSessionRequest: 'workspace.md',
   WorkspaceOrderValue: 'workspace.md',
   WorkspacePinSessionRequest: 'workspace.md',
   WorkspacePinValue: 'workspace.md',

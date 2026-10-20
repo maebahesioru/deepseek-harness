@@ -49,9 +49,23 @@ export class WorkspaceUnknownSessionError extends Error {
    * @param sessionId - The unknown session id.
    * @param verb - The registry operation that named the session.
    */
-  constructor(readonly sessionId: SessionId, verb: 'archive' | 'pin') {
+  constructor(readonly sessionId: SessionId, verb: 'archive' | 'pin' | 'move') {
     super(`cannot ${verb} session '${sessionId}': live sessions and session persistence hold no such session`)
     this.name = 'WorkspaceUnknownSessionError'
+  }
+}
+
+/**
+ * A moveSession request named a workspace the registry does not know, so there
+ * is no account to claim the session. Nothing was written.
+ */
+export class WorkspaceMoveTargetUnknownError extends Error {
+  /**
+   * @param workspaceId - The unknown target workspace id.
+   */
+  constructor(readonly workspaceId: WorkspaceId) {
+    super(`cannot move a session into unknown workspace '${workspaceId}'`)
+    this.name = 'WorkspaceMoveTargetUnknownError'
   }
 }
 
@@ -178,11 +192,26 @@ export class WorkspaceRegistry extends Service {
   private readonly sessionPaths = new Map<SessionId, string>()
   private readonly missingSessionPaths = new Set<SessionId>()
   private readonly invalidSessionPaths = new Map<SessionId, string>()
+  /**
+   * Explicit-move claims by session, rebuilt from every record's
+   * `movedSessionIds` at startup and maintained by the two host hooks. A
+   * claim outranks the canonical-cwd answer, which is what lets a moved
+   * session leave the workspace its directory names.
+   */
+  private readonly movedOwners = new Map<SessionId, WorkspaceId>()
   private operationTail: Promise<void> = Promise.resolve()
 
   private readonly host: WorkspaceEntityHost = {
     table: () => this.requireTable(),
-    candidateMatches: (id, path) => this.sessionPaths.get(id) === path || this.missingSessionPaths.has(id),
+    candidateMatches: (id, path, workspaceId) => {
+      const owner = this.movedOwners.get(id)
+      if (owner !== undefined) return owner === workspaceId
+      return this.sessionPaths.get(id) === path || this.missingSessionPaths.has(id)
+    },
+    claimMovedSession: (id, workspaceId) => { this.movedOwners.set(id, workspaceId) },
+    releaseMovedSession: (id, workspaceId) => {
+      if (this.movedOwners.get(id) === workspaceId) this.movedOwners.delete(id)
+    },
     readSessionHeader: id => this.readSessionHeader(id),
     rememberSessionPath: (id, path) => {
       this.sessionPaths.set(id, path)
@@ -493,6 +522,62 @@ export class WorkspaceRegistry extends Service {
   }
 
   /**
+   * Move one known session into another workspace by explicit user claim.
+   * The session's stored header keeps its cwd and its log stays where it is:
+   * membership is a registry account, so the target gains the id at the head
+   * of its account, every other account drops it, and the claim keeps the
+   * target owning it even though the canonical cwd names the old workspace.
+   * The move is marked before the first account write and the marker is
+   * cleared after the last one, so an interrupted run is completed at the next
+   * startup instead of leaving the id in two accounts or in none.
+   * A session already owned by the target resolves without writing; an
+   * unknown workspace or unknown session rejects before any write.
+   * @param sessionId - The session to move.
+   * @param workspaceId - The workspace that now owns it.
+   * @returns resolution after durability.
+   */
+  moveSession(sessionId: SessionId, workspaceId: WorkspaceId): Promise<void> {
+    return this.enqueueOperation(async () => {
+      const target = this.entities.get(workspaceId)
+      if (target === undefined) throw new WorkspaceMoveTargetUnknownError(workspaceId)
+      if (!(await this.sessionKnown(sessionId))) {
+        throw new WorkspaceUnknownSessionError(sessionId, 'move')
+      }
+      const owner = this.movedOwners.get(sessionId)
+      if (owner === workspaceId) return
+      // Without a claim the session already belongs to the target when its
+      // canonical cwd names the target directory; nothing to write then.
+      if (owner === undefined && target.sessionIds.includes(sessionId)) return
+      await this.setState({
+        ...this.requireState(),
+        pendingMutation: { operation: 'move', workspaceId, sessionId },
+      })
+      await this.applyMove(sessionId, workspaceId)
+      await this.setState({ ...this.requireState(), pendingMutation: undefined })
+    })
+  }
+
+  /**
+   * Claim the id at the target first, then drop it everywhere else: because
+   * the claim decides membership, the target owns the id from its own write
+   * on and every other account filters it out at once, so no window exposes
+   * the session twice.
+   */
+  private async applyMove(sessionId: SessionId, workspaceId: WorkspaceId): Promise<void> {
+    const target = this.entities.get(workspaceId)
+    if (target === undefined) throw new WorkspaceMoveTargetUnknownError(workspaceId)
+    await target.claimSession(sessionId)
+    const stale = [...this.requireTable().entries()]
+      .filter(([id, record]) => id !== workspaceId && record.sessionIds.includes(sessionId))
+      .map(([id]) => id)
+    for (const id of stale) {
+      const entity = this.entities.get(id)
+      if (entity !== undefined) await entity.detachSession(sessionId)
+    }
+    this.movedOwners.set(sessionId, workspaceId)
+  }
+
+  /**
    * Resolve by canonical directory path without creating or mutating a
    * workspace. A missing path rejects during `realpath`; an existing unowned
    * directory returns `undefined`.
@@ -521,6 +606,7 @@ export class WorkspaceRegistry extends Service {
       path: canonical,
       title: workspaceName,
       sessionIds: [],
+      movedSessionIds: [],
       createdAt: now,
       updatedAt: now,
     }
@@ -637,6 +723,12 @@ export class WorkspaceRegistry extends Service {
     const state = this.requireState()
     const pending = state.pendingMutation
     if (pending === undefined) return
+    if (pending.operation === 'move') {
+      await this.recoverMove(pending.sessionId, pending.workspaceId)
+      await this.setState({ ...this.requireState(), pendingMutation: undefined })
+      this.rebuildMovedOwners()
+      return
+    }
     if (state.workspaceIds.includes(pending.workspaceId)) {
       throw new Error(
         `workspace domain is inconsistent: pending ${pending.operation} workspace `
@@ -645,6 +737,44 @@ export class WorkspaceRegistry extends Service {
     }
     await this.requireTable().delete(pending.workspaceId)
     await this.setState({ ...state, pendingMutation: undefined })
+  }
+
+  /**
+   * Complete an interrupted move at the table level, so startup can repair the
+   * accounts before {@link validateStoredState} reads them and before any
+   * entity exists. A target that is gone (deleted while the marker was being
+   * written) leaves nothing to claim; the marker alone is then cleared.
+   */
+  private async recoverMove(sessionId: SessionId, workspaceId: WorkspaceId): Promise<void> {
+    const table = this.requireTable()
+    const target = table.get(workspaceId)
+    if (target !== undefined) {
+      const sessionIds = target.sessionIds.includes(sessionId)
+        ? target.sessionIds
+        : [sessionId, ...target.sessionIds]
+      const movedSessionIds = target.movedSessionIds.includes(sessionId)
+        ? target.movedSessionIds
+        : [sessionId, ...target.movedSessionIds]
+      if (sessionIds !== target.sessionIds || movedSessionIds !== target.movedSessionIds) {
+        await table.update(workspaceId, record => ({
+          ...record,
+          sessionIds,
+          movedSessionIds,
+          updatedAt: new Date().toISOString(),
+        }))
+      }
+    }
+    const stale = [...table.entries()]
+      .filter(([id, record]) => id !== workspaceId && record.sessionIds.includes(sessionId))
+      .map(([id]) => id)
+    for (const id of stale) {
+      await table.update(id, record => ({
+        ...record,
+        sessionIds: record.sessionIds.filter(candidate => candidate !== sessionId),
+        movedSessionIds: record.movedSessionIds.filter(candidate => candidate !== sessionId),
+        updatedAt: new Date().toISOString(),
+      }))
+    }
   }
 
   private async bootstrap(headers: readonly SessionHeader[]): Promise<void> {
@@ -685,6 +815,7 @@ export class WorkspaceRegistry extends Service {
           path: group.path,
           title: defaultWorkspaceTitle(group.path),
           sessionIds,
+          movedSessionIds: [],
           createdAt,
           updatedAt: createdAt,
         }
@@ -771,6 +902,15 @@ export class WorkspaceRegistry extends Service {
         )
       }
       paths.set(record.path, id)
+      const accountedHere = new Set<SessionId>(record.sessionIds)
+      for (const sessionId of record.movedSessionIds) {
+        if (!accountedHere.has(sessionId)) {
+          throw new Error(
+            `workspace domain is inconsistent: workspace '${id}' claims moved session `
+            + `'${sessionId}' that it does not account`,
+          )
+        }
+      }
       for (const sessionId of record.sessionIds) {
         const holder = accounted.get(sessionId)
         if (holder !== undefined) {
@@ -789,6 +929,15 @@ export class WorkspaceRegistry extends Service {
     for (const id of this.requireState().workspaceIds) {
       const record = this.requireTable().get(id) as WorkspaceRecord
       this.entities.set(id, new WorkspaceEntity(this.host, id, record))
+    }
+    this.rebuildMovedOwners()
+  }
+
+  /** Rebuild the explicit-move index from the durable account records. */
+  private rebuildMovedOwners(): void {
+    this.movedOwners.clear()
+    for (const [id, record] of this.requireTable().entries()) {
+      for (const sessionId of record.movedSessionIds) this.movedOwners.set(sessionId, id)
     }
   }
 
@@ -844,8 +993,10 @@ export class WorkspaceRegistry extends Service {
   private reportFilteredCandidates(): void {
     for (const entity of this.entities.values()) {
       const record = this.requireTable().get(entity.id) as WorkspaceRecord
+      const moved = new Set<SessionId>(record.movedSessionIds)
       for (const sessionId of record.sessionIds) {
-        if (this.host.candidateMatches(sessionId, record.path)) continue
+        if (moved.has(sessionId)) continue
+        if (this.host.candidateMatches(sessionId, record.path, entity.id)) continue
         const path = this.sessionPaths.get(sessionId)
         const reason = this.invalidSessionPaths.get(sessionId)
           ?? (this.headers.has(sessionId)

@@ -12,6 +12,7 @@ import type {
   WorkspaceFollowFrame,
   WorkspaceInsertBeforeRequest,
   WorkspaceInsertSessionBeforeRequest,
+  WorkspaceMoveSessionRequest,
   WorkspaceOrderValue,
   WorkspacePinSessionRequest,
   WorkspacePinValue,
@@ -86,6 +87,11 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
   ) => Promise<RemoteResult<WorkspaceValue>> = request => Promise.resolve(remoteOk({
     workspace: workspace(String(request.workspaceId), [request.sessionId]),
   }))
+  onMoveSession: (
+    request: WorkspaceMoveSessionRequest,
+  ) => Promise<RemoteResult<WorkspaceValue>> = request => Promise.resolve(remoteOk({
+    workspace: workspace(String(request.workspaceId), [request.sessionId]),
+  }))
   onArchiveSession: (
     request: WorkspaceArchiveSessionRequest,
   ) => Promise<RemoteResult<WorkspaceArchiveValue>> = request =>
@@ -126,6 +132,11 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
   insertSessionBefore(request: WorkspaceInsertSessionBeforeRequest): Promise<RemoteResult<WorkspaceValue>> {
     this.record('insertSessionBefore', request)
     return this.onInsertSessionBefore(request)
+  }
+
+  moveSession(request: WorkspaceMoveSessionRequest): Promise<RemoteResult<WorkspaceValue>> {
+    this.record('moveSession', request)
+    return this.onMoveSession(request)
   }
 
   archiveSession(request: WorkspaceArchiveSessionRequest): Promise<RemoteResult<WorkspaceArchiveValue>> {

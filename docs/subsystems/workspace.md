@@ -27,8 +27,9 @@ Consumers see only the `Workspace` interface; the implementation stays package-p
  * One workspace: a stable id over an existing directory, a display title, and
  * an ordered candidate account of sessions. Membership validates header cwd
  * against the workspace path, but preserves an existing account when its
- * fully qualified cwd is missing. Consumers only see this interface; the
- * implementation stays private.
+ * fully qualified cwd is missing, and a session the user moved here
+ * explicitly keeps its slot whatever its header cwd says. Consumers only see
+ * this interface; the implementation stays private.
  */
 interface Workspace {
   /** Stable record id (generated uuid). */
@@ -58,8 +59,10 @@ interface Workspace {
    * and canonical cwd mismatches are never returned. A fully qualified cwd
    * whose realpath or directory stat fails with ENOENT preserves an existing
    * candidate, including a dangling symlink; other filesystem failures do not.
-   * A subsequent mutation prunes filtered candidates, not missing-directory
-   * candidates. This does not admit new sessions or recreate directories.
+   * A session moved here by `workspaceRegistry.moveSession` stays a member
+   * without passing that check. A subsequent mutation prunes filtered
+   * candidates, not missing-directory or explicitly moved candidates. This
+   * does not admit new sessions or recreate directories.
    */
   readonly sessionIds: readonly SessionId[]
 
@@ -117,13 +120,19 @@ interface Workspace {
 }
 ```
 
-Ownership truth is the record's ordered `sessionIds`, never derived from session cwd. Membership validates the recorded header cwd against the workspace path; an existing candidate remains owned when its fully qualified cwd fails resolution or directory stat with `ENOENT`. This preserves missing-directory and dangling-symlink accounts without admitting new sessions. Failed writes reject (`insertSessionBefore` account errors as `WorkspaceMoveInvalidError`, storage failures as plain errors); every accepted mutation stamps `updatedAt` and durably prunes candidates that no longer pass the membership check.
+Ownership truth is the record's ordered `sessionIds`, never derived from session cwd. Membership validates the recorded header cwd against the workspace path; an existing candidate remains owned when its fully qualified cwd fails resolution or directory stat with `ENOENT`. This preserves missing-directory and dangling-symlink accounts without admitting new sessions. Failed writes reject (`insertSessionBefore` account errors as `WorkspaceMoveInvalidError`, storage failures as plain errors); every accepted mutation stamps `updatedAt` and durably prunes candidates that no longer pass the membership check, except the ones an explicit move claimed ([Session moves between workspaces](#session-moves-between-workspaces)).
 
 ## The registry: `ctx.workspaceRegistry`
 
-`WorkspaceRegistry` ([signatures](#ctxworkspaceregistry--workspaceregistry)) owns registration and resolution. `create(path, title?)` requires a fully qualified path, canonicalizes it, rejects a nonexistent path (the original `ENOENT`) or a non-directory, returns the existing entity unchanged when the canonical path is already owned, and otherwise creates a record with `title ?? defaultWorkspaceTitle(path)` prepended to the durable registry order (different canonical paths may share a display title, and a path with no final segment uses its root spelling). `get(id)` and the ordered `list()` are synchronous cache reads; `resolveByPath(path)` applies the same fully qualified realpath canon without creating. `delete(id)` removes only the registration, order entry, and session account — the directory, user files, live sessions, and persisted logs are never touched, so those sessions become Ungrouped ([reference](../../packages/workspace/workspace/README.md)); unknown ids return `false`. Create and delete persist a pending-mutation marker before their two writes (record + order) can diverge; startup resolves exactly the marked mutation — by deleting the marked table row, which completes an interrupted delete and rolls back an interrupted create (the registration is re-creatable, so rollback is the safe direction) — and an unmarked order/table mismatch fails loud as corruption.
+`WorkspaceRegistry` ([signatures](#ctxworkspaceregistry--workspaceregistry)) owns registration and resolution. `create(path, title?)` requires a fully qualified path, canonicalizes it, rejects a nonexistent path (the original `ENOENT`) or a non-directory, returns the existing entity unchanged when the canonical path is already owned, and otherwise creates a record with `title ?? defaultWorkspaceTitle(path)` prepended to the durable registry order (different canonical paths may share a display title, and a path with no final segment uses its root spelling). `get(id)` and the ordered `list()` are synchronous cache reads; `resolveByPath(path)` applies the same fully qualified realpath canon without creating. `delete(id)` removes only the registration, order entry, and session account — the directory, user files, live sessions, and persisted logs are never touched, so those sessions become Ungrouped ([reference](../../packages/workspace/workspace/README.md)); unknown ids return `false`. Create, delete, and session moves persist a pending-mutation marker before their writes can diverge; startup resolves exactly the marked mutation — by deleting the marked table row, which completes an interrupted delete and rolls back an interrupted create (the registration is re-creatable, so rollback is the safe direction), or by completing a marked session move (see [Session moves between workspaces](#session-moves-between-workspaces)) — and an unmarked order/table mismatch fails loud as corruption.
 
 Sessions get their cwd at create time from whoever creates them, not from this registry — the API gateway resolves a new session's cwd from the chosen workspace's `path` (falling back to an explicit or default cwd), creates the session so the cwd lands in its immutable [`SessionHeader`](persistence.md#sessionheader--metadata-beside-the-log), then calls `attachSession`, which re-validates that stored header cwd against the workspace path. On the first successful start, the registry bootstraps history from persisted headers alone (`id`, `cwd`, `createdAt` — never event bodies), grouping sessions with a valid canonical cwd into per-directory workspaces, newest first; the initialized marker is written last so an interrupted bootstrap resumes safely. The bootstrap is one-time: cwd-less legacy sessions stay Ungrouped, and sessions created afterwards join a workspace only through `attachSession`.
+
+## Session moves between workspaces
+
+Session membership is a registry account, not a property of the Session. `moveSession(sessionId, workspaceId)` reassigns one known Session to another Workspace by explicit user claim: the target gains the id at the head of its account, every other account drops it, and the Session's stored header cwd and log stay where they are. The log physically belongs to the directory that created it — relocating it would redirect every later append — while grouping surfaces read the account, so an explicit claim is what keeps the target owning the Session even though its canonical cwd names the old Workspace.
+
+The claim is durable beside the account: `movedSessionIds` holds the ids the user moved here, so a candidate that no longer passes the header check still renders in this Workspace, and `detachSession` drops the claim along with the account, returning the Session to whatever its cwd names. A move stamps a `pendingMutation` marker before the first write and clears it after the last, so one interrupted run never leaves the id in two accounts or in none: startup completes the marked move before `validateStoredState` reads the accounts. Moving a Session the target already owns resolves without writing; an unknown Workspace or an unknown Session rejects before any write; no other condition refuses, and the cwd the Session runs in is not relinked, so a moved Session keeps resolving relative paths against its original directory.
 
 ## Default Workspace initialization
 
@@ -168,7 +177,7 @@ interface SessionActivity {
 
 ## Consumers
 
-[`dsh-workspace-controller`](../../packages/api/workspace-controller) serves workspace CRUD to GUI clients over `ctx.workspaceRegistry`, and [`dsh-session-controller`](../../packages/api/session-controller) performs the create-session-then-attach flow above. [dsh-agent-instructions](../../packages/context/agent-instructions) is **not** a consumer despite the name: it discovers AGENTS.md-style instruction files under an agent's own cwd and never touches `ctx.workspaceRegistry` — the shared word refers to the user's working directory, not to this registry's entities.
+[`dsh-workspace-controller`](../../packages/api/workspace-controller) serves workspace CRUD to GUI clients over `ctx.workspaceRegistry`, and [`dsh-session-controller`](../../packages/api/session-controller) performs the create-session-then-attach flow above. The sidebar's Session row menu offers **Move to workspace…**, which calls `moveSession` through that controller; the dialog lists every Workspace that does not already account for the row, because the one it sits in is not a destination. [dsh-agent-instructions](../../packages/context/agent-instructions) is **not** a consumer despite the name: it discovers AGENTS.md-style instruction files under an agent's own cwd and never touches `ctx.workspaceRegistry` — the shared word refers to the user's working directory, not to this registry's entities.
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -357,6 +366,15 @@ Host service backing the generated `ctx.remote.workspace` namespace.
  * @returns the updated Workspace projection.
  */
 @Remote('insertSessionBefore') insertSessionBefore(request: WorkspaceInsertSessionBeforeRequest): Promise<WorkspaceValue>
+
+/**
+ * Move one known Session into another Workspace by explicit user claim. The
+ * Session's stored header cwd and its log stay put; the target account owns
+ * it from then on and every other account drops it.
+ * @param request - Target Workspace and the Session to move.
+ * @returns the target Workspace projection after the move.
+ */
+@Remote('moveSession') moveSession(request: WorkspaceMoveSessionRequest): Promise<WorkspaceValue>
 
 /**
  * Hide one known Session from Workspace grouping surfaces.
@@ -578,6 +596,23 @@ pinSession(sessionId: SessionId): Promise<void>
  * @returns resolution after durability.
  */
 unpinSession(sessionId: SessionId): Promise<void>
+
+/**
+ * Move one known session into another workspace by explicit user claim.
+ * The session's stored header keeps its cwd and its log stays where it is:
+ * membership is a registry account, so the target gains the id at the head
+ * of its account, every other account drops it, and the claim keeps the
+ * target owning it even though the canonical cwd names the old workspace.
+ * The move is marked before the first account write and the marker is
+ * cleared after the last one, so an interrupted run is completed at the next
+ * startup instead of leaving the id in two accounts or in none.
+ * A session already owned by the target resolves without writing; an
+ * unknown workspace or unknown session rejects before any write.
+ * @param sessionId - The session to move.
+ * @param workspaceId - The workspace that now owns it.
+ * @returns resolution after durability.
+ */
+moveSession(sessionId: SessionId, workspaceId: WorkspaceId): Promise<void>
 
 /**
  * Resolve by canonical directory path without creating or mutating a

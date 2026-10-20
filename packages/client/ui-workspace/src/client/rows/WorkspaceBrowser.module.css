@@ -619,3 +619,46 @@
     transition: none;
   }
 }
+
+/* Session move dialog: one row per candidate Workspace, title over path. */
+.moveTargetList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.moveTargetButton {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  text-align: start;
+  cursor: pointer;
+}
+
+.moveTargetButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.moveTargetButton:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.moveTargetPath {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.moveError {
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+}

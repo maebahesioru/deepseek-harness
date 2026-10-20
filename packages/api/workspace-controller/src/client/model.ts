@@ -12,6 +12,7 @@ import type {
   WorkspaceCreateValue,
   WorkspaceDeleteValue,
   WorkspaceInsertSessionBeforeRequest,
+  WorkspaceMoveSessionRequest,
   WorkspaceOrderValue,
   WorkspacePinSessionRequest,
   WorkspacePinValue,
@@ -177,6 +178,22 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
       sessionId,
       ...beforeSessionId === undefined ? {} : { beforeSessionId },
     })
+    if (result.ok) this.upsert(result.value.workspace)
+    return result
+  }
+
+  /**
+   * Move one Session into another Workspace and install the returned target
+   * projection; the follow frame for the source account arrives on its own.
+   * @param sessionId - Session to move.
+   * @param workspaceId - Workspace that now owns it.
+   * @returns generated Remote result.
+   */
+  async moveSession(
+    sessionId: WorkspaceMoveSessionRequest['sessionId'],
+    workspaceId: WorkspaceMoveSessionRequest['workspaceId'],
+  ): Promise<RemoteResult<WorkspaceValue>> {
+    const result = await this.remote.moveSession({ sessionId, workspaceId })
     if (result.ok) this.upsert(result.value.workspace)
     return result
   }

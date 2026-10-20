@@ -199,6 +199,21 @@ class FakeWorkspaces implements IWorkspaces {
   declare readonly delete: IWorkspaces['delete']
   declare readonly insertBefore: IWorkspaces['insertBefore']
   declare readonly insertSessionBefore: IWorkspaces['insertSessionBefore']
+  readonly moveCalls: { sessionId: SessionId; workspaceId: WorkspaceId }[] = []
+  onMove: IWorkspaces['moveSession'] = async (sessionId, workspaceId) => {
+    this.list.update(state => ({
+      ...state,
+      items: state.items.map(item => ({
+        ...item,
+        sessionIds: item.workspaceId === workspaceId
+          ? [sessionId, ...item.sessionIds.filter(id => id !== sessionId)]
+          : item.sessionIds.filter(id => id !== sessionId),
+      })),
+    }))
+    const target = this.list.getSnapshot().items.find(item => item.workspaceId === workspaceId)
+    if (target === undefined) throw new Error(`unknown workspace '${workspaceId}'`)
+    return target
+  }
   readonly pinCalls: SessionId[] = []
   readonly unpinCalls: SessionId[] = []
   onPin: IWorkspaces['pinSession'] = async (sessionId) => {
@@ -225,6 +240,11 @@ class FakeWorkspaces implements IWorkspaces {
   pinSession(sessionId: SessionId): Promise<void> {
     this.pinCalls.push(sessionId)
     return this.onPin(sessionId)
+  }
+
+  moveSession(sessionId: SessionId, workspaceId: WorkspaceId): Promise<WorkspaceView> {
+    this.moveCalls.push({ sessionId, workspaceId })
+    return this.onMove(sessionId, workspaceId)
   }
 
   async unpinSession(sessionId: SessionId): Promise<void> {

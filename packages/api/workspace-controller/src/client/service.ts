@@ -101,6 +101,14 @@ export interface IWorkspaces {
    */
   unpinSession(sessionId: SessionId): Promise<void>
   /**
+   * Move one Session into another Workspace by explicit user claim; the
+   * Session's stored header cwd and log stay put and the target owns it.
+   * @param sessionId - Session to move.
+   * @param workspaceId - Workspace that now owns it.
+   * @returns the target Workspace projection.
+   */
+  moveSession(sessionId: SessionId, workspaceId: WorkspaceId): Promise<WorkspaceView>
+  /**
    * Move a Session within one Workspace account.
    * @param workspaceId - owning Workspace.
    * @param sessionId - Session to move.
@@ -158,6 +166,12 @@ export class WorkspaceController extends Service implements IWorkspaces {
   async archiveSession(sessionId: SessionId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {
     const result = await this.model.archiveSession(sessionId, options)
     if (!result.ok) throw new WorkspaceArchiveError(result.error)
+  }
+
+  async moveSession(sessionId: SessionId, workspaceId: WorkspaceId): Promise<WorkspaceView> {
+    const result = await this.model.moveSession(sessionId, workspaceId)
+    if (!result.ok) throw commandError('session move', result.error)
+    return result.value.workspace
   }
 
   async unarchiveSession(sessionId: SessionId): Promise<void> {

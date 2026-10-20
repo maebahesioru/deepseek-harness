@@ -111,6 +111,15 @@ export interface WorkspaceInsertSessionBeforeRequest {
   readonly beforeSessionId?: SessionId
 }
 
+/**
+ * Session moved into a Workspace by explicit user claim: the target owns it
+ * from then on even though its stored header cwd names another directory.
+ */
+export interface WorkspaceMoveSessionRequest {
+  readonly workspaceId: WorkspaceId
+  readonly sessionId: SessionId
+}
+
 /** Session requested for archival from Workspace grouping surfaces. */
 export interface WorkspaceArchiveSessionRequest {
   readonly sessionId: SessionId

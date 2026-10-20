@@ -385,6 +385,41 @@ export interface SessionArchiveConfirmInjected {
   stopAndArchiveSession: (sessionId: SessionId) => Promise<void>
 }
 
+/**
+ * Move action share (menu row). The row only raises the request; the dialog
+ * entry answers it, because the row unmounts with its menu.
+ */
+export interface MoveSessionInjected {
+  /** Ask for the move dialog for one row. */
+  requestSessionMove: (sessionId: SessionId, displayTitle: string) => void
+}
+
+/** A Session move the menu row asked for; the dialog entry opens on it. */
+export interface SessionMoveTarget {
+  /** Session to move. */
+  sessionId: SessionId
+  /** Title the dialog names the Session by. */
+  displayTitle: string
+}
+
+/**
+ * Move dialog share: the pending request, the Workspace rows it chooses
+ * between, and the move hop the dialog confirms with. A move is an account
+ * change only — the Session's log and its own working directory stay put.
+ */
+export interface SessionMoveDialogInjected {
+  hooks: {
+    /** The move asked for, until the dialog consumes or cancels it. */
+    moveRequest: HostObservable<SessionMoveTarget | null>
+    /** Every Workspace in registry order; the dialog drops the current owner. */
+    workspaceRows: HostObservable<readonly WorkspaceView[]>
+  }
+  /** Consume or cancel the pending request. */
+  settleSessionMove: () => void
+  /** Move a Session into a Workspace (resolves once the Host owns it there). */
+  moveSession: (sessionId: SessionId, workspaceId: WorkspaceId) => Promise<void>
+}
+
 /** Fork action share. */
 export interface ForkSessionInjected {
   /** Fork a Session at its last completed turn; the child arrives through the Host list. */
@@ -449,6 +484,13 @@ export type SessionRenameDialogProps =
   & PropsLocale<'workspace'>
   & Omit<SessionRenameDialogInjected, 'hooks'>
   & PropsHooks<SessionRenameDialogInjected['hooks']>
+
+/** Props of the move dialog entry in `shell.overlay`. */
+export type SessionMoveDialogProps =
+  PropsRuntime<'shell.overlay'>
+  & PropsLocale<'workspace'>
+  & Omit<SessionMoveDialogInjected, 'hooks'>
+  & PropsHooks<SessionMoveDialogInjected['hooks']>
 
 /** Props of the stop-and-archive dialog entry in `shell.overlay`. */
 export type SessionArchiveConfirmProps =

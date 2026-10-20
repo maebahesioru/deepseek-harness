@@ -137,11 +137,17 @@ function selectiveFailureBackend(
   }
 }
 
-function record(path: string, sessionIds: string[], createdAt = '2026-07-24T00:00:00.000Z'): WorkspaceRecord {
+function record(
+  path: string,
+  sessionIds: string[],
+  createdAt = '2026-07-24T00:00:00.000Z',
+  movedSessionIds: string[] = [],
+): WorkspaceRecord {
   return {
     path,
     title: basename(path),
     sessionIds: sessionIds.map(SessionId),
+    movedSessionIds: movedSessionIds.map(SessionId),
     createdAt,
     updatedAt: createdAt,
   }
@@ -1534,6 +1540,106 @@ describe('first-use Workspace preparation', () => {
     expect(storedState(pool).defaultWorkspaceId).toBeUndefined()
     await expect(realpath(join(h.directoryRoot, 'nested', 'Workspace'))).resolves.toBe(join(h.directoryRoot, 'nested', 'Workspace'))
     expect(await h.registry.initializeDefault(h.resolveDirectory)).toBeDefined()
+  })
+})
+
+describe('cross-workspace session move', () => {
+  it('claims a session for another workspace and drops it from the workspace its cwd names', async () => {
+    const home = await makeDir('move-home')
+    const project = await makeDir('move-project')
+    const sessions = [header('moved', project)]
+    const h = await harness({ sessions })
+    onTestFinished(() => h.ctx.fiber.dispose())
+    const homeWorkspace = await h.registry.create(home)
+    const projectWorkspace = await h.registry.create(project)
+    expect(projectWorkspace.sessionIds).toEqual(['moved'])
+
+    await h.registry.moveSession(SessionId('moved'), homeWorkspace.id)
+
+    expect(homeWorkspace.sessionIds).toEqual(['moved'])
+    expect(projectWorkspace.sessionIds).toEqual([])
+    expect(storedRecord(h.pool, homeWorkspace.id).sessionIds).toEqual(['moved'])
+    expect(storedRecord(h.pool, homeWorkspace.id).movedSessionIds).toEqual(['moved'])
+    expect(storedRecord(h.pool, projectWorkspace.id).sessionIds).toEqual([])
+    expect(storedState(h.pool).pendingMutation).toBeUndefined()
+    await h.ctx.fiber.dispose()
+
+    const restarted = await harness({ pool: h.pool, sessions })
+    onTestFinished(() => restarted.ctx.fiber.dispose())
+    expect(restarted.registry.get(homeWorkspace.id)!.sessionIds).toEqual(['moved'])
+    expect(restarted.registry.get(projectWorkspace.id)!.sessionIds).toEqual([])
+  })
+
+  it('resolves without writing when the target already owns the session', async () => {
+    const dir = await makeDir('move-idempotent')
+    const sessions = [header('own', dir)]
+    const h = await harness({ sessions })
+    onTestFinished(() => h.ctx.fiber.dispose())
+    const workspace = await h.registry.create(dir)
+    const before = storedRecord(h.pool, workspace.id)
+    await h.registry.moveSession(SessionId('own'), workspace.id)
+    expect(storedRecord(h.pool, workspace.id)).toEqual(before)
+  })
+
+  it('rejects an unknown workspace or an unknown session without writing', async () => {
+    const dir = await makeDir('move-reject')
+    const sessions = [header('known', dir)]
+    const h = await harness({ sessions })
+    onTestFinished(() => h.ctx.fiber.dispose())
+    const workspace = await h.registry.create(dir)
+    const before = storedRecord(h.pool, workspace.id)
+    await expect(h.registry.moveSession(SessionId('known'), WorkspaceId('absent-workspace')))
+      .rejects.toThrow(/unknown workspace/)
+    await expect(h.registry.moveSession(SessionId('absent-session'), workspace.id))
+      .rejects.toThrow(/hold no such session/)
+    expect(storedRecord(h.pool, workspace.id)).toEqual(before)
+    expect(storedState(h.pool).pendingMutation).toBeUndefined()
+  })
+
+  it('drops the claim when the session is detached, so a later move can claim it elsewhere', async () => {
+    const home = await makeDir('move-detach-home')
+    const project = await makeDir('move-detach-project')
+    const sessions = [header('moved', project)]
+    const h = await harness({ sessions })
+    onTestFinished(() => h.ctx.fiber.dispose())
+    const homeWorkspace = await h.registry.create(home)
+    const projectWorkspace = await h.registry.create(project)
+    await h.registry.moveSession(SessionId('moved'), homeWorkspace.id)
+
+    await homeWorkspace.detachSession(SessionId('moved'))
+    expect(homeWorkspace.sessionIds).toEqual([])
+    expect(storedRecord(h.pool, homeWorkspace.id).movedSessionIds).toEqual([])
+
+    await h.registry.moveSession(SessionId('moved'), projectWorkspace.id)
+    expect(projectWorkspace.sessionIds).toEqual(['moved'])
+    expect(storedRecord(h.pool, projectWorkspace.id).sessionIds).toEqual(['moved'])
+  })
+
+  it('completes an interrupted move at startup and clears its marker', async () => {
+    const home = await makeDir('move-resume-home')
+    const project = await makeDir('move-resume-project')
+    const target = WorkspaceId('resume-target')
+    const source = WorkspaceId('resume-source')
+    const sessions = [header('moved', project)]
+    const pool = storedPool(
+      [[target, record(home, [])], [source, record(project, ['moved'])]],
+      {
+        initialized: true,
+        workspaceIds: [target, source],
+        archivedSessionIds: [],
+        pinnedSessionIds: [],
+        pendingMutation: { operation: 'move', workspaceId: target, sessionId: SessionId('moved') },
+      },
+    )
+    const h = await harness({ pool, sessions })
+    onTestFinished(() => h.ctx.fiber.dispose())
+
+    expect(storedRecord(pool, target).sessionIds).toEqual(['moved'])
+    expect(storedRecord(pool, target).movedSessionIds).toEqual(['moved'])
+    expect(storedRecord(pool, source).sessionIds).toEqual([])
+    expect(storedState(pool).pendingMutation).toBeUndefined()
+    expect(h.registry.get(target)!.sessionIds).toEqual(['moved'])
+    expect(h.registry.get(source)!.sessionIds).toEqual([])
   })
 })
 

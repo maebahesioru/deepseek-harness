@@ -3838,6 +3838,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the updated Workspace projection.',
       },
       {
+        signature: '@Remote(\'moveSession\') moveSession(request: WorkspaceMoveSessionRequest): Promise<WorkspaceValue>',
+        description: 'Move one known Session into another Workspace by explicit user claim. The Session\'s stored header cwd and its log stay put; the target account owns it from then on and every other account drops it.',
+        parameters: [{ name: 'request', description: 'Target Workspace and the Session to move.' }],
+        returns: 'the target Workspace projection after the move.',
+      },
+      {
         signature: '@Remote(\'archiveSession\') archiveSession(request: WorkspaceArchiveSessionRequest): Promise<WorkspaceArchiveValue>',
         description: 'Hide one known Session from Workspace grouping surfaces.',
         parameters: [{ name: 'request', description: 'Session identity to archive.' }],
@@ -3970,6 +3976,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'unpinSession(sessionId: SessionId): Promise<void>',
         description: 'Unpin one session durably by dropping it from the registry-global pin set. Unpinning runs no session-existence check because removing an id cannot introduce an unknown one, so an entry whose session is gone still resolves. An id that is not pinned resolves without writing.',
         parameters: [{ name: 'sessionId', description: 'The session to unpin.' }],
+        returns: 'resolution after durability.',
+      },
+      {
+        signature: 'moveSession(sessionId: SessionId, workspaceId: WorkspaceId): Promise<void>',
+        description: 'Move one known session into another workspace by explicit user claim. The session\'s stored header keeps its cwd and its log stays where it is: membership is a registry account, so the target gains the id at the head of its account, every other account drops it, and the claim keeps the target owning it even though the canonical cwd names the old workspace. The move is marked before the first account write and the marker is cleared after the last one, so an interrupted run is completed at the next startup instead of leaving the id in two accounts or in none. A session already owned by the target resolves without writing; an unknown workspace or unknown session rejects before any write.',
+        parameters: [{ name: 'sessionId', description: 'The session to move.' }, { name: 'workspaceId', description: 'The workspace that now owns it.' }],
         returns: 'resolution after durability.',
       },
       {
@@ -8836,6 +8848,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'WorkspaceInsertSessionBeforeRequest',
     declaration: 'export interface WorkspaceInsertSessionBeforeRequest {\n    readonly workspaceId: WorkspaceId;\n    readonly sessionId: SessionId;\n    readonly beforeSessionId?: SessionId;\n}',
+  },
+  {
+    name: 'WorkspaceMoveSessionRequest',
+    declaration: 'export interface WorkspaceMoveSessionRequest {\n    readonly workspaceId: WorkspaceId;\n    readonly sessionId: SessionId;\n}',
   },
   {
     name: 'WorkspaceOrderValue',

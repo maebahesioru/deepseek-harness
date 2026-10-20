@@ -9,11 +9,14 @@
   en: d61a7e78bbc1fb56
   zh: 8397869f70cd5b28
 /workspaces/the-workspace-entity:
-  en: ce5b65fb4d0b0c7b
-  zh: aa332a17810d583a
+  en: 7dc278cd4f0f0ce3
+  zh: d70c9122edd37563
 /workspaces/the-registry-ctx-workspaceregistry:
-  en: 73b54ccf836b7f46
-  zh: 7ee93ba8bb0a616a
+  en: 69b0df1de35d7b35
+  zh: 17e434718c329d5b
+/workspaces/session-moves-between-workspaces:
+  en: 9d8f0e94ae3a6f2e
+  zh: cbca54be989a6bf0
 /workspaces/default-workspace-initialization:
   en: c4307480e504ba81
   zh: dc8a98e1b447b900
@@ -24,5 +27,5 @@
   en: f4ae8ce5eb2ef329
   zh: 333106e86263be40
 /workspaces/consumers:
-  en: 6b592294ff18b4d3
-  zh: a48bec961b8182a9
+  en: 25c0c61e1f10a22c
+  zh: dde2d722469d8b64
