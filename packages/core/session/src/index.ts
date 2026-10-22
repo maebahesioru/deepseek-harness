@@ -519,6 +519,16 @@ export function pluginRecordOf(event: SessionEvent): PluginRecord | undefined {
  * Seeding with an existing event log replays/forks a session.
  * @typert object
  */
+/**
+ * Salvage mode switch. `DSH_SESSION_SALVAGE=1` keeps the longest structurally
+ * valid prefix of a stored log instead of rejecting the session outright; the
+ * on-disk log is never modified (offline repair is a separate tool).
+ */
+function readSalvageFlag(): boolean {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+  return env?.['DSH_SESSION_SALVAGE'] === '1'
+}
+
 export class Session {
   private log: SessionEvent[] = []
   /** Single incremental owner of surface acceptance and projection state. */
@@ -561,6 +571,13 @@ export class Session {
    * history start at seq 0.
    */
   readonly firstLiveSeq: SessionLogOffset
+
+  /**
+   * Number of stored seed events kept versus the stored total, set only when
+   * salvage mode (`DSH_SESSION_SALVAGE=1`) had to truncate an inconsistent log.
+   * Undefined for healthy sessions.
+   */
+  readonly seedTruncation?: { kept: number; total: number }
 
   /**
    * First event produced for this object lifecycle. A new fork includes its
@@ -632,6 +649,9 @@ export class Session {
     projections: readonly SessionMessageProjection[] = [],
   ) {
     this.surfaceManager = new SurfaceManager(this.log, SessionLogOffset(0), projections)
+    // Salvage mode: when DSH_SESSION_SALVAGE=1, a structurally inconsistent
+    // stored log keeps its valid prefix instead of failing the whole session.
+    const salvageSeed = readSalvageFlag()
     const restoredHeader = mode === 'snapshot' ? undefined : validateRestoredSessionHeader(id, header)
     if (seed !== undefined) {
       // Validate the seed to the SAME invariants `append` enforces, so a
@@ -646,10 +666,17 @@ export class Session {
         // complete event in one lossless-JSON pass.
         const snapshot = mode === 'snapshot' ? snapshotJsonValue(source) : source
         if (snapshot === undefined) {
+          if (salvageSeed) break
           throw new Error(`seed event at index ${index} is not losslessly JSON-serializable`)
         }
-        assertSessionEventEnvelope(snapshot, index)
+        try {
+          assertSessionEventEnvelope(snapshot, index)
+        } catch (error: unknown) {
+          if (salvageSeed) break
+          throw error
+        }
         if (snapshot.seq !== index) {
+          if (salvageSeed) break
           throw new Error(`seed event at index ${index} has seq ${snapshot.seq} (expected ${index}); seed must be contiguous from 0`)
         }
         // A seed is accepted incrementally through the same transition as a
@@ -658,9 +685,16 @@ export class Session {
         try {
           this.surfaceManager.validateNext(snapshot)
         } catch (error: unknown) {
+          if (salvageSeed) break
           throw new Error(`invalid seed event at index ${index}: ${error instanceof Error ? error.message : 'invalid surface metadata'}`)
         }
         this.log.push(mode === 'snapshot' ? deepFreeze(snapshot) : snapshot)
+      }
+      if (salvageSeed && this.log.length < seed.length) {
+        // Salvage keeps the longest structurally-valid prefix of the stored
+        // log instead of rejecting the whole session. The remaining events stay
+        // on disk untouched; callers can show a truncation notice.
+        this.seedTruncation = { kept: this.log.length, total: seed.length }
       }
     }
     this.firstLiveSeq = SessionLogOffset(this.log.length)
