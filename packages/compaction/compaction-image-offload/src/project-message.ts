@@ -19,8 +19,9 @@ export function offloadMessageImages(message: Message, indexes: readonly number[
       let projected = block
       if (block.type === 'image') {
         if (imageIndex === indexes[selected]) {
-          if (block.offloaded === true) throw new Error(`image/offload: image index ${imageIndex} is already offloaded`)
-          projected = { ...block, offloaded: true }
+          // A salvaged or compacted log can name an occurrence that is already
+          // offloaded; count it and move on instead of failing the replay.
+          if (block.offloaded !== true) projected = { ...block, offloaded: true }
           selected += 1
         }
         imageIndex += 1
@@ -31,6 +32,8 @@ export function offloadMessageImages(message: Message, indexes: readonly number[
     return next ?? blocks as ContentBlock[]
   }
   const content = visit(message.content)
-  if (selected !== indexes.length) throw new Error(`image/offload: image index ${indexes[selected]} does not exist`)
+  // Indexes that no longer resolve (the message was rewritten by an earlier
+  // salvage/compaction step) are ignored: projecting what still exists keeps
+  // old sessions resumable instead of failing the whole turn.
   return deepFreeze({ ...message, content })
 }
