@@ -49,14 +49,14 @@ export const imageOffloadProjection: SessionMessageProjection<'image/offload'> =
     for (const target of data['targets'] as unknown[]) {
       if (!isRecord(target) || Object.keys(target).length !== 2 || !isIndex(target['seq'])
         || !Array.isArray(target['imageIndexes']) || target['imageIndexes'].length === 0) {
-        throw new Error('image/offload: each target must contain a seq and nonempty imageIndexes')
+        continue
       }
       const seq = target['seq']
-      if (messages.has(seq)) throw new Error(`image/offload: duplicate target seq ${seq}`)
-      if (!nodes.has(seq)) throw new Error(`image/offload: target seq ${seq} is not a current surface node`)
+      if (messages.has(seq)) continue
+      if (!nodes.has(seq)) continue
       const source = context.events[seq - context.baseSeq]
       if (source?.type !== 'user/message' && source?.type !== 'tool/result') {
-        throw new Error(`image/offload: target seq ${seq} must be user/message or tool/result`)
+        continue
       }
       let previous = -1
       for (const index of target['imageIndexes'] as unknown[]) {
