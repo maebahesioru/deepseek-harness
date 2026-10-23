@@ -362,7 +362,10 @@ export function assistantStreamHasVisibleContent(stream: readonly AssistantStrea
  * @param stream - compact records from one durable Assistant settlement.
  * @returns whether the stream contributes visible text.
  */
-export function assistantStreamHasVisibleText(stream: readonly AssistantStreamRecord[]): boolean {
+export function assistantStreamHasVisibleText(stream: readonly AssistantStreamRecord[] | undefined): boolean {
+  // A salvaged or compacted log can carry an assistant message without a
+  // compact stream; treat that as "no visible text" rather than throwing.
+  if (stream === undefined) return false
   return stream.some(record => record.type === 'text-chunks'
     ? record.texts.some(hasNonWhitespace)
     : record.type === 'chunk' && chunkHasVisibleText(record.chunk))
@@ -375,9 +378,10 @@ export function assistantStreamHasVisibleText(stream: readonly AssistantStreamRe
  * @returns the stream's final chunk of that type, or undefined when it has none.
  */
 export function lastAssistantStreamChunk<T extends RawStreamChunkType>(
-  stream: readonly AssistantStreamRecord[],
+  stream: readonly AssistantStreamRecord[] | undefined,
   type: T,
 ): Extract<StreamChunk, { type: T }> | undefined {
+  if (stream === undefined) return undefined
   for (let index = stream.length - 1; index >= 0; index -= 1) {
     const record = stream[index] as AssistantStreamRecord
     if (record.type === 'chunk' && record.chunk.type === type) return record.chunk as Extract<StreamChunk, { type: T }>
@@ -392,9 +396,10 @@ export function lastAssistantStreamChunk<T extends RawStreamChunkType>(
  * @returns the matching chunks; empty when the stream has none.
  */
 export function assistantStreamChunks<T extends RawStreamChunkType>(
-  stream: readonly AssistantStreamRecord[],
+  stream: readonly AssistantStreamRecord[] | undefined,
   type: T,
 ): readonly Extract<StreamChunk, { type: T }>[] {
+  if (stream === undefined) return []
   const chunks: Extract<StreamChunk, { type: T }>[] = []
   for (const record of stream) {
     if (record.type === 'chunk' && record.chunk.type === type) chunks.push(record.chunk as Extract<StreamChunk, { type: T }>)
