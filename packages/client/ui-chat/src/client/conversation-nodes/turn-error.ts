@@ -33,7 +33,10 @@ function lastStep(context: ConversationNodeContext<TurnErrorState>): number {
  * Failure shown for a turn ending: a recorded error, a sign-out cancellation,
  * or a turn that restart recovery closed because the DSH process exited mid-turn.
  */
-function endFailure(reason: TurnEndReason): { readonly message: string; readonly code?: string } | undefined {
+function endFailure(reason: TurnEndReason | undefined): { readonly message: string; readonly code?: string } | undefined {
+  // Logs written before turn endings carried a reason (or by tools that
+  // rebuilt them) have no reason: treat that as a plain completed turn.
+  if (reason === undefined) return undefined
   switch (reason.kind) {
     case 'error':
       return reason.error
