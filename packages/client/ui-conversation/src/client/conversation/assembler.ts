@@ -599,7 +599,10 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
       throw new Error(`conversation Context ${key} received non-appended Match ${match.event.seq}`)
     }
     if (starting && context.matches.length > 0) {
-      throw new Error(`conversation Context ${key} received an update before its start Match`)
+      // A rebuilt or salvaged log can deliver a start after earlier matches for
+      // the same context. Adopt it as the start instead of dropping the feed.
+      context.start = match
+      context.startSeq = match.event.seq
     }
     context.matches.push(match)
     if (starting) {
@@ -699,7 +702,8 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
       return
     }
     if (context.matches[0] !== start) {
-      throw new Error(`conversation Context ${context.key} received an update before its start Match`)
+      // Tolerate a start that is not the first match (rebuilt history).
+      context.matches.unshift(start)
     }
     const dependencies = new Map<string, Dependency>()
     const reader = this.readerFor(start.event.seq, dependencies)
