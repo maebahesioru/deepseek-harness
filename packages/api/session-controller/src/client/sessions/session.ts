@@ -415,9 +415,9 @@ export class Session implements SessionFace {
         ...HISTORY_PAGE_OPTIONS,
       })
     } catch (error) {
-      if (!isRemoteFailure(error)) {
-        console.error('[session-controller] loadOlder failed:', error)
-      }
+      // Surface every failure: a RemoteFailure here used to be swallowed, which
+      // left the "load older" button doing nothing with no visible reason.
+      console.error('[session-controller] loadOlder failed:', error)
     } finally {
       this.loadingOlder = false
       this.notifier.markDirty()

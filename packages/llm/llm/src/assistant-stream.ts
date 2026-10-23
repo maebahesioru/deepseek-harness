@@ -330,7 +330,11 @@ export function runFirstVisibleTime(run: AssistantStreamRun): number | undefined
  * @param stream - compact records from one durable Assistant settlement.
  * @returns the first token's time, or undefined when the stream carries no token.
  */
-export function assistantStreamFirstTokenTime(stream: readonly AssistantStreamRecord[]): number | undefined {
+export function assistantStreamFirstTokenTime(stream: readonly AssistantStreamRecord[] | undefined): number | undefined {
+  // Older pages can arrive without a compact stream (salvaged or compacted
+  // logs); treat that as "no timing information" instead of throwing while a
+  // transcript page is being assembled.
+  if (stream === undefined) return undefined
   for (const record of stream) {
     const time = record.type === 'chunk'
       ? (isTokenDelta(record.chunk) ? record.time : undefined)
